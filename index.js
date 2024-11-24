@@ -1,11 +1,12 @@
 const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
-const puppeteer = require("puppeteer");
-const { del } = require("selenium-webdriver/http");
+const puppeteer = require("puppeteer-core");
+const chromium = require("chrome-aws-lambda");
 
 const app = express();
 
+// Allowed Origins for CORS
 const allowedOrigins = [
   "https://cgpa-leaderboad.vercel.app",
   "https://nitjsr.vercel.app",
@@ -14,6 +15,7 @@ const allowedOrigins = [
   "http://localhost:3000",
 ];
 
+// Configure CORS
 app.use(cors({
   origin: function (origin, callback) {
     if (allowedOrigins.includes(origin) || !origin) {
@@ -25,7 +27,7 @@ app.use(cors({
   methods: "GET, POST",
 }));
 
-// Load environment variables
+// Load Environment Variables
 dotenv.config();
 const id = process.env.regn;
 const pwd = process.env.pwd;
@@ -36,34 +38,35 @@ const port = process.env.PORT || 3001;
 // Middleware to parse JSON
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Delay Helper Function
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-
+// Fetch Attendance Function
 const fetchAttendance = async (regn) => {
   let browser;
   try {
-    // Launch Puppeteer
+    // Launch Puppeteer with custom Chromium binary
     browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      executablePath: await chromium.executablePath,
+      args: chromium.args,
+      headless: chromium.headless,
     });
 
     const page = await browser.newPage();
 
     // Step 1: Login
-    // console.log(url1)
-    await page.goto(url1, { waitUntil: "networkidle2" });
-    await page.type("#txtuser_id", id);
-    await page.type("#txtpassword", pwd);
-    await page.click("#btnsubmit");
-    await page.waitForNavigation({ waitUntil: "networkidle2" });
-    // await delay(5000)
+    await page.goto(url1, { waitUntil: 'networkidle2' });
+    await page.type('#txtuser_id', id);
+    await page.type('#txtpassword', pwd);
+    await page.click('#btnsubmit');
+    await page.waitForNavigation({ waitUntil: 'networkidle2' });
+
     // Step 2: Navigate to attendance page
     await page.goto(url2, { waitUntil: "networkidle2" });
 
-    // await delay(5000)
     // Step 3: Interact with dropdown and select student
     const studentName = await page.evaluate((regn) => {
       const select = document.querySelector("#ContentPlaceHolder1_ddlroll");
@@ -73,19 +76,18 @@ const fetchAttendance = async (regn) => {
         if (optionToSelect) {
           optionToSelect.selected = true;
           select.dispatchEvent(new Event("change"));
-          // delay(2000)
           return optionToSelect.text.split("-")[1].trim(); // Extract student name
         }
       }
       return null;
     }, regn);
-    await delay(2000)
+    await delay(2000);
     if (!studentName) {
       return { success: false, message: "Attendance not available on portal for this regn..." };
     }
 
-    // Wait for the attendance table to load
-    await page.waitForSelector("#ContentPlaceHolder1_gv");
+    // Wait for 2 seconds
+    
 
     // Step 4: Extract attendance data
     const attendance = await page.evaluate(() => {
@@ -112,20 +114,19 @@ const fetchAttendance = async (regn) => {
   }
 };
 
-// POST route to fetch attendance
+// POST Route for Attendance
 app.post("/api/v1/att", async (req, res) => {
   const { regn } = req.body;
   const response = await fetchAttendance(regn);
   res.send(response);
 });
 
-// Root route
+// Root Route
 app.get("/", (req, res) => {
-  res.send("kya aapke tooth paste mein namak hai?");
+  res.send("Welcome to the attendance API!");
 });
 
-// Start the server
-// console.log(url2)
+// Start Server
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });
