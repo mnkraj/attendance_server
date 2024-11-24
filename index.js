@@ -1,16 +1,17 @@
 const express = require("express");
 const dotenv = require("dotenv");
-const bodyParser = require('body-parser');
 const cors = require("cors");
-const { Builder, By, until } = require('selenium-webdriver');
-const chrome = require('selenium-webdriver/chrome');
+const puppeteer = require("puppeteer");
+const { del } = require("selenium-webdriver/http");
+
 const app = express();
+
 const allowedOrigins = [
   "https://cgpa-leaderboad.vercel.app",
   "https://nitjsr.vercel.app",
   "https://cgpanitjsr.vercel.app",
   "https://cgpa-leaderboard.vercel.app",
-  "http://localhost:3000"
+  "http://localhost:3000",
 ];
 
 app.use(cors({
@@ -21,132 +22,110 @@ app.use(cors({
       callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: "GET"
+  methods: "GET, POST",
 }));
 
-// connectDB();
+// Load environment variables
 dotenv.config();
 const id = process.env.regn;
 const pwd = process.env.pwd;
 const url1 = process.env.login_url;
 const url2 = process.env.attendacnce_url;
-const port = process.env.PORT;
+const port = process.env.PORT || 3001;
 
-
-
+// Middleware to parse JSON
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-
-const buildDriver = () => {
-    const options = new chrome.Options()
-        .addArguments("--headless", "--disable-gpu", "--window-size=1920,1080");
-    return new Builder().forBrowser('chrome').setChromeOptions(options).build();
-};
-
 function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+
 const fetchAttendance = async (regn) => {
-    const driver = buildDriver();
+  let browser;
+  try {
+    // Launch Puppeteer
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
 
-    try {
-        // Step 1: Login
-        await driver.get(url1);
-        await driver.wait(until.elementLocated(By.id('txtuser_id')), 10000).sendKeys(id);
-        await driver.wait(until.elementLocated(By.id('txtpassword')), 10000).sendKeys(pwd);
-        await driver.wait(until.elementLocated(By.id('btnsubmit')), 10000).click();
-        await driver.wait(
-            async () => (await driver.getCurrentUrl()) !== url1,
-            15000 // Adjust timeout as needed
-        );
-        
-        // Step 3: Navigate directly to attendance URL
-        await driver.get(url2);
+    const page = await browser.newPage();
 
-        // Step 3: Interact with dropdown and extract student name
-        await driver.wait(until.elementLocated(By.id('ContentPlaceHolder1_ddlroll')), 10000);
-        const selectElement = await driver.findElement(By.id('ContentPlaceHolder1_ddlroll'));
-        await driver.executeScript("arguments[0].removeAttribute('disabled');", selectElement);
+    // Step 1: Login
+    // console.log(url1)
+    await page.goto(url1, { waitUntil: "networkidle2" });
+    await page.type("#txtuser_id", id);
+    await page.type("#txtpassword", pwd);
+    await page.click("#btnsubmit");
+    await page.waitForNavigation({ waitUntil: "networkidle2" });
+    // await delay(5000)
+    // Step 2: Navigate to attendance page
+    await page.goto(url2, { waitUntil: "networkidle2" });
 
-        const studentName = await driver.executeScript(
-            `const select = document.querySelector('#ContentPlaceHolder1_ddlroll');
-             const optionToSelect = Array.from(select.options).find(option => option.value === '${regn}');
-             let studentName = "";
-             if (optionToSelect) {
-                 optionToSelect.selected = true;
-                 studentName = optionToSelect.text.split('-')[1].trim();
-                 select.dispatchEvent(new Event('change'));
-             }
-             return studentName;`
-        );
-
-        if (!studentName) {
-            await driver.quit();
-            return { success: false, message: "Attendance not available on portal for this regn..." };
+    // await delay(5000)
+    // Step 3: Interact with dropdown and select student
+    const studentName = await page.evaluate((regn) => {
+      const select = document.querySelector("#ContentPlaceHolder1_ddlroll");
+      if (select) {
+        select.removeAttribute("disabled");
+        const optionToSelect = Array.from(select.options).find((option) => option.value === regn);
+        if (optionToSelect) {
+          optionToSelect.selected = true;
+          select.dispatchEvent(new Event("change"));
+          // delay(2000)
+          return optionToSelect.text.split("-")[1].trim(); // Extract student name
         }
-
-        // Step 4: Wait for attendance data to load
-        // await waitForNetworkIdle(driver);
-        await delay(2000); // Waits for 2 seconds
-
-
-        // Step 5: Extract attendance table data
-        const attendanceTable = await driver.findElement(By.id('ContentPlaceHolder1_gv'));
-        const rows = await attendanceTable.findElements(By.tagName('tr'));
-        const attendance = [];
-
-        for (const row of rows) {
-            const cells = await row.findElements(By.tagName('td'));
-            const cellData = cells.length > 0 ? cells : await row.findElements(By.tagName('th'));
-            const rowData = [];
-            for (const cell of cellData) {
-                const text = await cell.getText();
-                rowData.push(text);
-            }
-            attendance.push(rowData);
-        }
-        await driver.quit();
-        return {
-            success: true,
-            data: {
-                student_name: studentName,
-                attendance: attendance,
-            },
-            message: "Attendance fetched successfully...",
-        };
-    } catch (err) {
-        console.error(err);
-        return { success: false, message: "An error occurred while fetching attendance." };
-    } finally {
-        
+      }
+      return null;
+    }, regn);
+    await delay(2000)
+    if (!studentName) {
+      return { success: false, message: "Attendance not available on portal for this regn..." };
     }
+
+    // Wait for the attendance table to load
+    await page.waitForSelector("#ContentPlaceHolder1_gv");
+
+    // Step 4: Extract attendance data
+    const attendance = await page.evaluate(() => {
+      const table = document.querySelector("#ContentPlaceHolder1_gv");
+      const rows = Array.from(table.querySelectorAll("tr"));
+      return rows.map((row) => Array.from(row.cells).map((cell) => cell.textContent.trim()));
+    });
+
+    return {
+      success: true,
+      data: {
+        student_name: studentName,
+        attendance: attendance,
+      },
+      message: "Attendance fetched successfully...",
+    };
+  } catch (error) {
+    console.error("Error fetching attendance:", error);
+    return { success: false, message: "An error occurred while fetching attendance." };
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
 };
 
+// POST route to fetch attendance
+app.post("/api/v1/att", async (req, res) => {
+  const { regn } = req.body;
+  const response = await fetchAttendance(regn);
+  res.send(response);
+});
 
+// Root route
+app.get("/", (req, res) => {
+  res.send("kya aapke tooth paste mein namak hai?");
+});
 
-app.post("/api/v1/att",async (req,res)=>{
-    console.log("1")
-    const {regn} = req.body;
-    const response  = await fetchAttendance(regn)
-
-    res.send(response);
-  })
-
-
-
-
-
-
-
-app.get("/",(req,res)=>{
-  res.send("kya aapke tooth paste mein namak hai ? ")
-})
-
-
-
-
+// Start the server
+// console.log(url2)
 app.listen(port, () => {
-    console.log(`Server is running on ${port}`);
+  console.log(`Server is running on port ${port}`);
 });
